@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>joindb — live demo</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #0d1117;
+    --border: #30363d;
+    --fg: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --green-dim: #1f6f3b;
+    --yellow: #d29922;
+    --yellow-dim: #6b4c0a;
+    --red: #f85149;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--fg);
+    font-family: var(--mono); font-size: 13px;
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
+  header h1 .v { color: var(--muted); font-weight: 400; margin-left: 8px; }
+  header .kbd { color: var(--muted); font-size: 12px; }
+
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 18px;
+    border-bottom: 1px solid var(--border); background: var(--panel-2);
+  }
+  .controls input[type=text] {
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 6px 8px; font-family: var(--mono); font-size: 13px;
+    width: 140px;
+  }
+  .controls button {
+    background: #21262d; color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 6px 12px; font-family: var(--mono); font-size: 13px;
+    cursor: pointer;
+  }
+  .controls button:hover { background: #30363d; border-color: #484f58; }
+  .controls button.primary { background: #1f6feb; border-color: #388bfd; }
+  .controls button.primary:hover { background: #388bfd; }
+  .controls button.warn { background: #6b4c0a; border-color: var(--yellow-dim); }
+  .controls button.warn:hover { background: var(--yellow-dim); }
+  .controls .spacer { flex: 1; }
+  .controls .stats { color: var(--muted); align-self: center; padding: 0 6px; }
+  .controls .stats b { color: var(--fg); font-weight: 500; }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: minmax(240px, 40vh) 1fr;
+    gap: 1px;
+    background: var(--border);
+    height: calc(100vh - 52px - 50px);
+  }
+  section {
+    background: var(--panel); overflow: hidden;
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  section h2 {
+    margin: 0; padding: 8px 14px; font-size: 12px; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--border); background: var(--panel-2);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  section h2 .meta { color: var(--fg); font-weight: 400; text-transform: none; letter-spacing: 0; }
+  section .body { flex: 1; overflow: auto; padding: 8px 14px; }
+
+  /* KV tables */
+  table.kv { width: 100%; border-collapse: collapse; }
+  table.kv td { padding: 2px 8px; vertical-align: top; }
+  table.kv td.k { color: var(--accent); white-space: nowrap; }
+  table.kv td.v { color: var(--fg); word-break: break-all; }
+  table.kv tr.flash { animation: flash 0.6s ease-out; }
+  @keyframes flash {
+    from { background: rgba(210, 153, 34, 0.35); }
+    to   { background: transparent; }
+  }
+  .empty { color: var(--muted); padding: 8px 0; font-style: italic; }
+
+  /* Merkle tree */
+  .tree { font-size: 12px; }
+  .node {
+    border: 1px solid var(--border); border-radius: 4px;
+    margin: 4px 0; padding: 6px 8px; background: var(--panel-2);
+  }
+  .node.replica-yes { border-color: var(--green-dim); background: rgba(63, 185, 80, 0.05); }
+  .node.replica-no  { border-color: var(--yellow-dim); background: rgba(210, 153, 34, 0.06); }
+  .node .head { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; }
+  .node .hash { color: var(--muted); }
+  .node .hash b { color: var(--fg); font-weight: 500; }
+  .node .tag { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
+  .node .tag.repl-yes { background: var(--green-dim); color: #d5f0dd; }
+  .node .tag.repl-no  { background: var(--yellow-dim); color: #f5e2b0; }
+  .node .range { color: var(--accent); }
+  .node .keys { color: var(--muted); font-size: 10px; margin-top: 3px; word-break: break-all; }
+  .node .children { margin-left: 14px; border-left: 1px dashed var(--border); padding-left: 10px; }
+
+  /* Patch log */
+  .log { font-size: 12px; }
+  .log .entry { padding: 2px 0; display: grid; grid-template-columns: 100px 50px 50px 1fr; gap: 8px; }
+  .log .entry .time { color: var(--muted); }
+  .log .entry .lsn { color: var(--accent); text-align: right; }
+  .log .entry .kind { text-transform: uppercase; font-size: 10px; padding: 1px 4px; border-radius: 2px; text-align: center; }
+  .log .entry .kind.insert { background: #1f6f3b; color: #d5f0dd; }
+  .log .entry .kind.update { background: #1f4d8a; color: #d4e3f7; }
+  .log .entry .kind.delete { background: #6e2f32; color: #f7d4d6; }
+  .log .entry .key { color: var(--fg); word-break: break-all; }
+  .log .entry .key .v { color: var(--muted); margin-left: 8px; }
+
+  .pill { font-size: 11px; padding: 2px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .pill.live { border-color: var(--green-dim); color: var(--green); }
+</style>
+</head>
+<body>
+<header>
+  <h1>joindb <span class="v">live demo · shard → replica</span></h1>
+  <div id="status" class="pill">connecting…</div>
+</header>
+<div class="controls">
+  <input type="text" id="k" placeholder="key" value="">
+  <input type="text" id="v" placeholder="value" value="">
+  <button class="primary" onclick="put()">Put</button>
+  <button onclick="del()">Delete</button>
+  <button onclick="burst(50)">+50 random</button>
+  <button onclick="burst(500)">+500</button>
+  <button onclick="burst(5000)">+5000</button>
+  <button class="warn" onclick="sync()">Merkle sync →</button>
+  <label style="color: var(--muted); display: flex; align-items: center; gap: 4px; padding: 0 6px;">
+    <input type="checkbox" id="autoSync" checked> auto
+  </label>
+  <div class="spacer"></div>
+  <span class="stats">source LSN <b id="srcLSN">0</b> · replica LSN <b id="repLSN">0</b></span>
+  <span class="stats">chunks <b id="srcChunks">0</b>/<b id="repChunks">0</b></span>
+  <span class="stats">last sync: <b id="lastSync">—</b></span>
+  <span class="stats">total: <b id="totalSync">—</b> over <b id="numSyncs">0</b></span>
+  <button onclick="reset()">Reset</button>
+</div>
+<main>
+  <section id="srcPanel">
+    <h2>Source shard <span class="meta"><span id="srcCount">0</span> keys</span></h2>
+    <div class="body"><table class="kv" id="srcTable"></table></div>
+  </section>
+  <section id="repPanel">
+    <h2>Live replica <span class="meta"><span id="repCount">0</span> keys · follows patch stream</span></h2>
+    <div class="body"><table class="kv" id="repTable"></table></div>
+  </section>
+  <section id="treePanel">
+    <h2>Merkle index (source) <span class="meta">green = in replica store · yellow = needs sync</span></h2>
+    <div class="body"><div class="tree" id="tree"></div></div>
+  </section>
+  <section id="logPanel">
+    <h2>Patch stream <span class="meta">newest first · LSN-ordered</span></h2>
+    <div class="body"><div class="log" id="log"></div></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let prevSrcKeys = new Set(), prevRepKeys = new Set();
+let prevSrcKVStr = new Map(), prevRepKVStr = new Map();
+
+function renderKV(tableId, kvs, prevKeys, prevStrs) {
+  const tbody = $(tableId);
+  if (kvs.length === 0) {
+    tbody.innerHTML = '<tr><td class="empty" colspan="2">(empty)</td></tr>';
+    const next = new Map();
+    prevKeys.clear();
+    prevStrs.clear();
+    for (const k of next.keys()) prevKeys.add(k);
+    return;
+  }
+  const rows = [];
+  const nextStrs = new Map();
+  for (const kv of kvs) {
+    const str = kv.value;
+    nextStrs.set(kv.key, str);
+    const isNew = !prevKeys.has(kv.key);
+    const changed = !isNew && prevStrs.get(kv.key) !== str;
+    const cls = (isNew || changed) ? ' class="flash"' : '';
+    rows.push(`<tr${cls}><td class="k">${esc(kv.key)}</td><td class="v">${esc(str)}</td></tr>`);
+  }
+  tbody.innerHTML = rows.join('');
+  prevKeys.clear();
+  for (const kv of kvs) prevKeys.add(kv.key);
+  prevStrs.clear();
+  for (const [k, v] of nextStrs) prevStrs.set(k, v);
+}
+
+function renderTree(node, depth = 0) {
+  if (!node) return '<div class="empty">(empty index)</div>';
+  const cls = node.inReplica ? 'replica-yes' : 'replica-no';
+  const tag = node.inReplica
+    ? '<span class="tag repl-yes">in replica</span>'
+    : '<span class="tag repl-no">pending</span>';
+  const range = node.minKey || node.maxKey
+    ? `<span class="range">[${esc(node.minKey)} … ${esc(node.maxKey)}]</span>`
+    : '';
+  let keysLine = '';
+  if (node.kind === 'leaf' && node.keys && node.keys.length <= 24) {
+    keysLine = `<div class="keys">${node.keys.map(esc).join('  ')}</div>`;
+  } else if (node.kind === 'leaf' && node.keys) {
+    keysLine = `<div class="keys">${node.keys.slice(0, 8).map(esc).join('  ')} … (${node.count} total)</div>`;
+  }
+  let kids = '';
+  if (node.children) {
+    kids = '<div class="children">' + node.children.map(c => renderTree(c, depth + 1)).join('') + '</div>';
+  }
+  return `<div class="node ${cls}">
+    <div class="head">
+      <span class="hash"><b>${esc(node.kind)}</b> ${esc(node.hash)} · ${node.count} ${node.kind === 'leaf' ? 'keys' : 'children'} · ${node.size}B</span>
+      ${tag}
+    </div>
+    <div>${range}</div>
+    ${keysLine}
+    ${kids}
+  </div>`;
+}
+
+function renderLog(patches) {
+  const rows = patches.map(p => {
+    const v = p.value ? `<span class="v">${esc(p.value)}</span>` : '';
+    return `<div class="entry">
+      <span class="time">${esc(p.time)}</span>
+      <span class="lsn">${p.lsn}</span>
+      <span class="kind ${p.kind}">${p.kind}</span>
+      <span class="key">${esc(p.key)}${v}</span>
+    </div>`;
+  });
+  $('log').innerHTML = rows.join('');
+}
+
+function esc(s) {
+  if (s === undefined || s === null) return '';
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function fmtSync(s) {
+  if (!s || s.chunks === 0) return '—';
+  return `${s.chunks} chunks · ${s.bytes}B`;
+}
+
+function render(state) {
+  $('srcLSN').textContent = state.sourceLSN;
+  $('repLSN').textContent = state.replicaLSN;
+  $('srcCount').textContent = state.sourceCount;
+  $('repCount').textContent = state.replicaCount;
+  $('srcChunks').textContent = state.sourceChunks;
+  $('repChunks').textContent = state.replicaChunks;
+  $('lastSync').textContent = fmtSync(state.lastSync);
+  $('totalSync').textContent = fmtSync(state.totalSync);
+  $('numSyncs').textContent = state.numSyncs;
+  renderKV('srcTable', state.sourceKVs, prevSrcKeys, prevSrcKVStr);
+  renderKV('repTable', state.replicaKVs, prevRepKeys, prevRepKVStr);
+  $('tree').innerHTML = renderTree(state.tree);
+  renderLog(state.patches);
+}
+
+async function post(path, body) {
+  await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : null,
+  });
+}
+async function mutate(path, body) {
+  await post(path, body);
+  if ($('autoSync').checked) await post('/api/sync');
+}
+function put() {
+  const k = $('k').value.trim();
+  const v = $('v').value;
+  if (!k) return;
+  mutate('/api/put', { Key: k, Value: v });
+  $('v').value = '';
+}
+function del() {
+  const k = $('k').value.trim();
+  if (!k) return;
+  mutate('/api/delete', { Key: k });
+}
+function burst(n) { mutate('/api/burst', { n }); }
+function sync() { post('/api/sync'); }
+function reset() {
+  if (!confirm('Reset source, replica, and all counters?')) return;
+  post('/api/reset');
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && document.activeElement && document.activeElement.id === 'v') put();
+});
+
+function connect() {
+  const es = new EventSource('/api/events');
+  es.onopen = () => {
+    $('status').textContent = 'live';
+    $('status').className = 'pill live';
+  };
+  es.onerror = () => {
+    $('status').textContent = 'disconnected';
+    $('status').className = 'pill';
+  };
+  es.onmessage = (ev) => {
+    try { render(JSON.parse(ev.data)); }
+    catch (e) { console.error('bad frame', e); }
+  };
+}
+connect();
+</script>
+</body>
+</html>

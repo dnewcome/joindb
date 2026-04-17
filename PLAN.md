@@ -58,6 +58,16 @@ No real network, persistence, failure handling, or multi-writer yet.
 
 Open: M6 (real sockets over the existing `wire.go` types), sparse / keys-only index with a single bounded range get at query time, disconnect/reconnect semantics for LiveReplica (pick: rebootstrap vs. Merkle delta).
 
+## Persistence (planned, not yet implemented)
+
+The architecture already splits this into two sub-problems, and they have very different difficulty profiles.
+
+**Cheap path — NodeStore on disk (~100 lines).** Index nodes are immutable, content-addressed blobs; this is the easy case for durability. Any KV store works (`bbolt`, `pebble`, `badger`), or git-style flat files at `store/aa/bbccdd...`. No atomicity concerns, no overwrite hazards, no recovery logic — the hash *is* the integrity check. GC is a mark-from-known-roots walk. Value unlocked: replicas survive restart without re-pulling the world, and `IdxStore` can be shared across processes.
+
+**Fuller path — Shard WAL (~200–300 lines).** The existing `Patch` sequence *is* the WAL you'd persist: append-only, LSN-ordered, strictly monotonic. Recovery = replay from the last snapshot LSN. Standard territory. The real tradeoff is durability discipline — per-write `fsync` (safe, slow), group commit (fast, nuanced), or no local fsync at all (rely on a durable peer and replay patches on restart). A third option worth considering: make the commit log the source of truth and treat the in-memory `map` as a materialized view, rebuilt on startup from the log. That's what the current architecture is already shaped like.
+
+**v0 recommendation:** do NodeStore-on-disk first. It's the smaller change and unlocks the most interesting demo — cold-start a replica, see it catch up via the persistent NodeStore without a full re-pull. Defer Shard WAL until we actually want authoritative shards to survive crashes.
+
 ## Out of scope for v0
 
 Persistence, crash recovery, multi-writer / consensus, schema & SQL, transactions, rebalance, auth.
