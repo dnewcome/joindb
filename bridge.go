@@ -76,7 +76,15 @@ func patchFromEntry(e StampedKV) Patch {
 	if e.Tombstone {
 		kind = PatchDelete
 	}
-	return Patch{Kind: kind, Key: e.Key, Value: e.Value, Stamp: e.Stamp}
+	return Patch{
+		Kind:      kind,
+		Key:       e.Key,
+		Value:     e.Value,
+		Stamp:     e.Stamp,
+		ModTime:   e.ModTime,
+		CreatedAt: e.CreatedAt,
+		Topic:     e.Topic,
+	}
 }
 
 // forward pumps patches from src's subscription into dst. aToB=true for

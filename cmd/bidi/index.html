@@ -99,6 +99,8 @@
     position: sticky; top: 0; background: var(--panel);
   }
   table.kv td { padding: 2px 8px; vertical-align: top; }
+  table.kv tbody tr { cursor: pointer; }
+  table.kv tbody tr:hover { background: rgba(88, 166, 255, 0.08); }
   table.kv td.k { color: var(--accent); white-space: nowrap; }
   table.kv td.v { color: var(--fg); word-break: break-all; }
   table.kv td.s { color: var(--muted); font-size: 11px; white-space: nowrap; }
@@ -138,6 +140,59 @@
   .diverge .k { color: var(--yellow); }
   .diverge .missing { color: var(--red); font-style: italic; }
   .diverge .winner { color: var(--green); font-weight: 500; }
+
+  .cursor {
+    grid-column: 1 / -1;
+    background: var(--panel);
+  }
+  .cursor .ctl {
+    display: flex; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border);
+    background: var(--panel-2); align-items: center; font-size: 12px;
+  }
+  .cursor .ctl label { color: var(--muted); }
+  .cursor .ctl button {
+    background: #21262d; color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 9px; font-family: var(--mono); font-size: 12px;
+    cursor: pointer;
+  }
+  .cursor .ctl button.active { background: #1f6feb; border-color: #388bfd; color: #fff; }
+  .cursor .ctl button:hover { background: #30363d; }
+  .cursor .ctl button.active:hover { background: #388bfd; }
+  .cursor table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .cursor th {
+    text-align: left; color: var(--muted); font-weight: 400;
+    border-bottom: 1px solid var(--border); padding: 4px 8px;
+  }
+  .cursor td { padding: 3px 8px; vertical-align: top; }
+  .cursor td.age { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .cursor td.age.fresh { color: var(--green); }
+  .cursor td.k { color: var(--accent); white-space: nowrap; }
+  .cursor td.s.local-A { color: #79c0ff; font-size: 11px; }
+  .cursor td.s.local-B { color: #d2a8ff; font-size: 11px; }
+  .cursor tr.flash-in { animation: flashIn 0.8s ease-out; }
+  @keyframes flashIn {
+    from { background: rgba(63, 185, 80, 0.25); }
+    to   { background: transparent; }
+  }
+  .cursor tr.left { animation: fadeOut 2s ease-in forwards; color: var(--muted); }
+  .cursor tr.left td.k, .cursor tr.left td.v, .cursor tr.left td { text-decoration: line-through; }
+  @keyframes fadeOut {
+    from { background: rgba(248, 81, 73, 0.22); opacity: 1; }
+    to   { background: transparent; opacity: 0.35; }
+  }
+  .topic-chip {
+    display: inline-block; padding: 1px 6px; border-radius: 999px; font-size: 10.5px;
+    background: #21262d; color: var(--muted); border: 1px solid var(--border);
+    margin-left: 6px;
+  }
+  .topic-chip.news   { background: #143d5f; color: #79c0ff; border-color: #1f4d8a; }
+  .topic-chip.sports { background: #3a1d52; color: #d2a8ff; border-color: #52306f; }
+  .topic-chip.tech   { background: #1f4d2a; color: #7ee787; border-color: #2b6b3c; }
+  .cursor .ctl input[type=text] {
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 8px; font-family: var(--mono); font-size: 12px;
+    width: 120px;
+  }
 </style>
 </head>
 <body>
@@ -160,6 +215,7 @@
     <div class="sideCtl">
       <input type="text" id="aKey" placeholder="key">
       <input type="text" id="aValue" placeholder="value">
+      <input type="text" id="aTopic" placeholder="topic" style="width:80px">
       <button class="primary" onclick="put('A')">Put</button>
       <button onclick="del('A')">Delete</button>
       <button onclick="burst('A', 20)">+20</button>
@@ -172,6 +228,7 @@
     <div class="sideCtl">
       <input type="text" id="bKey" placeholder="key">
       <input type="text" id="bValue" placeholder="value">
+      <input type="text" id="bTopic" placeholder="topic" style="width:80px">
       <button class="primary" onclick="put('B')">Put</button>
       <button onclick="del('B')">Delete</button>
       <button onclick="burst('B', 20)">+20</button>
@@ -182,6 +239,43 @@
   <section class="diverge">
     <h2>Divergence <span class="meta" id="divMeta">keys where A and B disagree</span></h2>
     <div class="body"><div id="divBody"></div></div>
+  </section>
+  <section class="cursor">
+    <h2>A · live materialized view <span class="meta" id="curMeta">CursorModified + CursorTopic · snapshot + Enter/Update/Leave events</span></h2>
+    <div class="ctl">
+      <label>mode:</label>
+      <button data-m="rolling" onclick="setMode('rolling')">rolling (modTime)</button>
+      <button data-m="fixed" onclick="setMode('fixed')">fixed (createdAt)</button>
+    </div>
+    <div class="ctl" id="rollingCtl">
+      <label>window:</label>
+      <button data-w="5" onclick="setWindow(5)">5s</button>
+      <button data-w="15" onclick="setWindow(15)">15s</button>
+      <button data-w="30" onclick="setWindow(30)">30s</button>
+      <button data-w="120" onclick="setWindow(120)">2m</button>
+      <button data-w="600" onclick="setWindow(600)">10m</button>
+    </div>
+    <div class="ctl" id="fixedCtl" style="display:none">
+      <label>created ≥</label>
+      <input type="datetime-local" id="curCreatedLo" step="1">
+      <label>created &lt;</label>
+      <input type="datetime-local" id="curCreatedHi" step="1" placeholder="(open)">
+      <button onclick="applyFixed()">apply</button>
+      <button onclick="setFixedPreset(-60)">last 1m</button>
+      <button onclick="setFixedPreset(-300)">last 5m</button>
+      <button onclick="setFixedPreset(-3600)">last 1h</button>
+    </div>
+    <div class="ctl">
+      <label>topic:</label>
+      <button data-t="" onclick="setTopic('')">(any)</button>
+      <button data-t="news" onclick="setTopic('news')">news</button>
+      <button data-t="sports" onclick="setTopic('sports')">sports</button>
+      <button data-t="tech" onclick="setTopic('tech')">tech</button>
+      <input type="text" id="curTopicInput" placeholder="custom…" onkeydown="if (event.key==='Enter') setTopic(this.value)">
+      <span style="flex:1"></span>
+      <span class="stats" id="curCount" style="color:var(--muted)">0 keys</span>
+    </div>
+    <div class="body"><div id="curBody"></div></div>
   </section>
   <section>
     <h2>A — patch stream <span class="meta">newest first; yellow = applied from peer</span></h2>
@@ -195,6 +289,8 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const prevKVs = { A: new Map(), B: new Map() };
+let lastState = null;
+let curPrevKeys = new Set();
 
 function esc(s) {
   if (s === undefined || s === null) return '';
@@ -216,7 +312,7 @@ function renderKV(side, kvs) {
     const prior = prevKVs[side].get(kv.key);
     const cls = (prior !== undefined && prior !== cur) || (prior === undefined && prevKVs[side].size > 0) ? ' class="flash"' : '';
     const stampClass = 's local-' + kv.origin;
-    rows.push(`<tr${cls}>
+    rows.push(`<tr${cls} data-side="${side}" data-key="${esc(kv.key)}" data-value="${esc(kv.value)}" data-topic="${esc(kv.topic || '')}" onclick="editRow(this)" title="click to load into the ${side} form">
       <td class="k">${esc(kv.key)}</td>
       <td class="v">${esc(kv.value)}</td>
       <td class="${stampClass}">${esc(kv.origin)}@${kv.clock}</td>
@@ -264,7 +360,111 @@ function renderDivergence(div) {
   body.innerHTML = `<table><thead><tr><th>key</th><th>A value</th><th>A stamp</th><th>B value</th><th>B stamp</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
 }
 
+function fmtAge(ms) {
+  if (ms < 0) ms = 0;
+  if (ms < 1000) return 'just now';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's ago';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ' + (s % 60) + 's ago';
+  return Math.floor(m / 60) + 'h ' + (m % 60) + 'm ago';
+}
+
+function topicChip(t) {
+  if (!t) return '';
+  const safe = t.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return `<span class="topic-chip ${safe}">${esc(t)}</span>`;
+}
+
+function fmtTS(ms) {
+  if (!ms) return '—';
+  const d = new Date(ms);
+  return d.toTimeString().slice(0, 8);
+}
+
+function renderCursor(cur, serverNow) {
+  const body = $('curBody');
+  const localNow = Date.now();
+  const skew = localNow - serverNow;
+  const liveCount = cur.entries.filter(e => !e.left).length;
+  const ghostCount = cur.entries.length - liveCount;
+  const topicLabel = cur.topic ? `topic=${cur.topic}` : 'all topics';
+  const rangeLabel = cur.mode === 'fixed'
+    ? `created ∈ [${fmtTS(cur.createdLo)}, ${cur.createdHi ? fmtTS(cur.createdHi) : '∞'})`
+    : `window ${cur.windowSec}s`;
+  $('curCount').textContent = `${liveCount} in ${topicLabel}, ${rangeLabel}` + (ghostCount ? ` · ${ghostCount} leaving` : '');
+  // Mode toggle display.
+  $('rollingCtl').style.display = cur.mode === 'fixed' ? 'none' : '';
+  $('fixedCtl').style.display = cur.mode === 'fixed' ? '' : 'none';
+  // Highlight active controls.
+  document.querySelectorAll('.cursor .ctl button[data-m]').forEach(b => {
+    b.classList.toggle('active', b.dataset.m === cur.mode);
+  });
+  document.querySelectorAll('.cursor .ctl button[data-w]').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.w, 10) === cur.windowSec);
+  });
+  document.querySelectorAll('.cursor .ctl button[data-t]').forEach(b => {
+    b.classList.toggle('active', b.dataset.t === cur.topic);
+  });
+  if (!cur.entries.length) {
+    const msg = cur.mode === 'fixed'
+      ? `(no live keys${cur.topic ? ` with topic "${esc(cur.topic)}"` : ''} in that creation range)`
+      : cur.topic
+        ? `(no keys on A with topic "${esc(cur.topic)}" in last ${cur.windowSec}s)`
+        : `(no writes on A in last ${cur.windowSec}s)`;
+    body.innerHTML = '<div class="empty" style="color:var(--muted);padding:8px 14px;font-style:italic">' + msg + '</div>';
+    curPrevKeys = new Set();
+    return;
+  }
+  const fixed = cur.mode === 'fixed';
+  const newKeys = new Set();
+  const rows = cur.entries.map(e => {
+    newKeys.add(e.key);
+    const age = localNow - skew - e.modTime;
+    const ageCls = age < 2000 ? 'age fresh' : 'age';
+    let cls = '';
+    if (e.left) cls = ' class="left"';
+    else if (!curPrevKeys.has(e.key)) cls = ' class="flash-in"';
+    const stampClass = 's local-' + e.origin;
+    const firstCol = e.left
+      ? 'left'
+      : fixed
+        ? fmtTS(e.createdAt)
+        : fmtAge(age);
+    return `<tr${cls} data-key="${esc(e.key)}" data-modtime="${e.modTime}">
+      <td class="${ageCls}">${esc(firstCol)}</td>
+      <td class="k">${esc(e.key)}${topicChip(e.topic)}</td>
+      <td>${esc(e.value)}</td>
+      <td class="${stampClass}">${esc(e.origin)}@${e.clock}</td>
+    </tr>`;
+  });
+  const firstHeader = fixed ? 'created' : 'age';
+  body.innerHTML = `<table><thead><tr><th style="width:100px">${firstHeader}</th><th style="width:160px">key</th><th>value</th><th style="width:80px">stamp</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+  curPrevKeys = newKeys;
+}
+
+// Tick the "age" column every second without rebuilding the DOM, so
+// relative times stay fresh even when no patch has arrived. Fixed mode
+// shows absolute creation times, which don't tick — skip in that case.
+function tickAges() {
+  if (!lastState) return;
+  if (lastState.cursor.mode === 'fixed') return;
+  const skew = Date.now() - lastState.cursor.now;
+  const localNow = Date.now();
+  document.querySelectorAll('.cursor tbody tr').forEach(tr => {
+    if (tr.classList.contains('left')) return; // leave the "left" label alone
+    const mt = parseInt(tr.dataset.modtime, 10);
+    if (!mt) return;
+    const age = localNow - skew - mt;
+    const cell = tr.firstElementChild;
+    cell.textContent = fmtAge(age);
+    cell.className = age < 2000 ? 'age fresh' : 'age';
+  });
+}
+setInterval(tickAges, 1000);
+
 function render(s) {
+  lastState = s;
   $('aLSN').textContent = s.a.lsn;
   $('bLSN').textContent = s.b.lsn;
   $('aLam').textContent = s.a.lamport;
@@ -287,6 +487,7 @@ function render(s) {
   renderLog('logA', s.logA, 'A');
   renderLog('logB', s.logB, 'B');
   renderDivergence(s.divergence);
+  renderCursor(s.cursor, s.cursor.now);
 }
 
 async function post(path, body) {
@@ -297,11 +498,27 @@ async function post(path, body) {
   });
 }
 
+// editRow populates the Put form on the same side with the clicked
+// row's key/value/topic. Hitting Put afterward overwrites it — which is
+// what "update" means on an upsert KV: a Put at the same key with a
+// new value bumps the Lamport, produces PatchUpdate, and syncs through
+// the bridge like any other write.
+function editRow(tr) {
+  const side = tr.dataset.side;
+  const low = side.toLowerCase();
+  $(low + 'Key').value = tr.dataset.key || '';
+  $(low + 'Value').value = tr.dataset.value || '';
+  $(low + 'Topic').value = tr.dataset.topic || '';
+  $(low + 'Value').focus();
+  $(low + 'Value').select();
+}
+
 function put(side) {
   const k = $(side.toLowerCase() + 'Key').value.trim();
   const v = $(side.toLowerCase() + 'Value').value;
+  const t = $(side.toLowerCase() + 'Topic').value.trim();
   if (!k) return;
-  post('/api/put', { Side: side, Key: k, Value: v });
+  post('/api/put', { Side: side, Key: k, Value: v, Topic: t });
   $(side.toLowerCase() + 'Value').value = '';
 }
 function del(side) {
@@ -311,6 +528,70 @@ function del(side) {
 }
 function burst(side, n) { post('/api/burst', { Side: side, N: n }); }
 function partition() { post('/api/partition'); }
+
+// cursorBaseReq rebuilds the full cursor config from lastState so each
+// control only needs to override the one field it cares about; the rest
+// stays pinned.
+function cursorBaseReq() {
+  const c = lastState ? lastState.cursor : {};
+  return {
+    Mode: c.mode || 'rolling',
+    WindowSec: c.windowSec || 30,
+    CreatedLo: c.createdLo || 0,
+    CreatedHi: c.createdHi || 0,
+    Topic: c.topic || '',
+  };
+}
+function setWindow(sec) {
+  const r = cursorBaseReq();
+  r.Mode = 'rolling';
+  r.WindowSec = sec;
+  post('/api/cursor', r);
+}
+function setTopic(t) {
+  const r = cursorBaseReq();
+  r.Topic = t;
+  post('/api/cursor', r);
+  if ($('curTopicInput')) $('curTopicInput').value = '';
+}
+function setMode(m) {
+  const r = cursorBaseReq();
+  r.Mode = m;
+  // Seed defaults when flipping into fixed mode with nothing set.
+  if (m === 'fixed' && !r.CreatedLo && !r.CreatedHi) {
+    const now = Date.now();
+    r.CreatedLo = now - 5 * 60 * 1000;
+    r.CreatedHi = 0;
+    // Prefill the inputs so the user sees what's in effect.
+    $('curCreatedLo').value = dtLocalValue(r.CreatedLo);
+    $('curCreatedHi').value = '';
+  }
+  post('/api/cursor', r);
+}
+function applyFixed() {
+  const r = cursorBaseReq();
+  r.Mode = 'fixed';
+  const lo = $('curCreatedLo').value;
+  const hi = $('curCreatedHi').value;
+  r.CreatedLo = lo ? new Date(lo).getTime() : 0;
+  r.CreatedHi = hi ? new Date(hi).getTime() : 0;
+  post('/api/cursor', r);
+}
+function setFixedPreset(deltaSec) {
+  const r = cursorBaseReq();
+  r.Mode = 'fixed';
+  const now = Date.now();
+  r.CreatedLo = now + deltaSec * 1000;
+  r.CreatedHi = 0;
+  $('curCreatedLo').value = dtLocalValue(r.CreatedLo);
+  $('curCreatedHi').value = '';
+  post('/api/cursor', r);
+}
+function dtLocalValue(ms) {
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
 function reset() {
   if (!confirm('Reset both nodes?')) return;
   post('/api/reset');

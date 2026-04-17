@@ -1,6 +1,6 @@
 # joindb
 
-A from-scratch prototype of a sharded database where **replicated indexes let a client identify and fetch exactly the remote rows it needs** (no remote scan), and where **cursors stay live under concurrent inserts/deletes** without restart.
+A from-scratch prototype of a sharded database where **replicated indexes let a client identify and fetch exactly the remote rows it needs** (no remote scan), where **cursors stay live under concurrent inserts/deletes** without restart, and where **two shards can converge bidirectionally via Lamport/origin-stamped LWW** — on top of which live materialized views (time window, topic filter, creation-time range) stay consistent under replicated mutations.
 
 The animating question: if a client can maintain a coherent local mirror of a remote shard's index — cheaply, and incrementally — then a join or range query "across" shards collapses into a mostly-local operation. The client becomes an extended database node, and "the remote feels local."
 
@@ -18,22 +18,25 @@ The prototype is the thinnest possible realization of all three questions in one
 
 ## What's in the box
 
-Six concepts, each earning its keep:
+Each concept earns its keep:
 
 | Concept        | File                            | Role                                                                 |
 | -------------- | ------------------------------- | -------------------------------------------------------------------- |
-| `Shard`        | `shard.go`                      | Authoritative in-memory key-value store with LSN-ordered write log.  |
+| `Shard`        | `shard.go`                      | Authoritative in-memory key-value store with LSN-ordered write log, secondary indexes on modTime and topic. |
+| `Stamp`        | `stamp.go`                      | Lamport clock + origin-ID pair; the basis for cross-shard LWW.       |
 | `Index`        | `index.go`, `hash.go`           | Immutable, content-addressed sorted tree (Prolly-tree-lite).         |
 | `NodeStore`    | `nodestore.go`                  | Content-addressed blob store. Nodes of the Index live here.          |
 | `Sync`         | `sync.go`                       | Pull-based Merkle diff: walk tree top-down, fetch only changed subtrees. |
 | `Subscription` | `cursor.go`                     | Atomic range snapshot + strict LSN-ordered patch stream.             |
+| `TopicSub`     | `cursor.go`                     | Live materialized-view cursor: snapshot + synthesized Enter/Update/Leave events as rows move in and out of a topic. |
 | `LiveReplica`  | `live.go`                       | Glues the snapshot + patch stream into a mirrored, queryable Shard.  |
+| `Bridge`       | `bridge.go`                     | Bidirectional sync between two Shards. Apply's stamp-dominance check does loop suppression and LWW conflict resolution. |
 | `Server`       | `server.go`                     | Remote-shard facade with per-RPC call counts (lets tests prove pushdown). |
 | `InnerJoinKeys`| `join.go`                       | Join executor that uses a local index when available; counts remote RPCs. |
 
-Plus `wire.go` — transport-agnostic request/response types that will fill out when M6 puts real sockets underneath.
+Plus `wire.go` — transport-agnostic request/response types that will fill out when real sockets land, and `cmd/bidi` — a single-page web demo of bidirectional sync with a live materialized-view panel.
 
-All told: **~600 lines of production code, ~700 lines of tests, 30 tests passing under `-race`.**
+All told: **~1.8k lines of production code, ~1.9k lines of tests, 50+ tests passing under `-race`.**
 
 ---
 
@@ -205,6 +208,77 @@ TestJoinPushdownSurvivesMutation
 
 This is the "clients could form sort of an extended database node, and operations locally would work as if the remote database was local" sentence from the original design sketch, running in code.
 
+### 7. Bidirectional sync: Lamport + origin, LWW via stamp dominance
+
+Two shards with distinct IDs (`A`, `B`) can be bridged so each side's writes propagate to the other. Every commit carries a `Stamp{Lamport, Origin}`; `Apply(patch)` on the receiving side accepts iff the incoming stamp **dominates** the current per-key stamp:
+
+```
+Dominates: higher Lamport wins; tie breaks by lexicographic Origin ID.
+```
+
+That one rule does three jobs:
+
+- **Loop suppression.** An echo returning to its origin has `Stamp == current`, so it fails dominance and is dropped. No extra bookkeeping.
+- **Conflict resolution.** Concurrent writes to the same key on both sides converge deterministically — whichever stamp dominates is the canonical value on both replicas.
+- **Stale-patch rejection.** A late-arriving patch with a lower stamp than the already-applied value is dropped silently.
+
+The `Bridge` glues two `Subscribe("", ∞)` streams into each other's `Apply`:
+
+```
+┌─────────┐  Subscribe(A)  ┌──────────┐   Apply   ┌─────────┐
+│ Shard A │ ─────────────▶ │  Bridge  │ ────────▶ │ Shard B │
+│         │                │          │           │         │
+│         │ ◀────────────  │          │ ◀──────── │         │
+└─────────┘  Apply         │          │ Subscribe └─────────┘
+                           └──────────┘ (B)
+```
+
+Bootstrap is handled by replaying each side's `Entries()` (a stamped snapshot including tombstones) through the other side's `Apply` before the forwarders spin up. LWW resolves any overlap.
+
+Tested with a partition-and-heal scenario: sever the bridge, write to both sides, reconnect, and confirm both converge to the LWW winner for every concurrently-written key.
+
+### 8. Live materialized views: cursors over filtered result sets
+
+Writes carry three timestamps now:
+
+- **`LSN`** — per-shard commit sequence (strictly monotonic).
+- **`ModTime`** — wall-clock instant of the committed write (ratchets on every update; preserved verbatim when propagated via `Apply`).
+- **`CreatedAt`** — set on first insert of a live instance, preserved through updates, reset on delete+reinsert.
+
+They're backed by two secondary indexes (`(modTime, key)` global, and `(modTime, key)` per-topic), so the following queries are O(log N + result):
+
+```go
+// All rows written in a time window.
+s.Modified(keyLo, keyHi, tLo, tHi) []ModifiedKV
+
+// Live cursor over a time window — atomic snapshot + patch stream.
+s.CursorModified(keyLo, keyHi, tLo, tHi) *TimedCursor
+
+// Live cursor over a topic: snapshot plus synthesized Enter/Update/Leave events.
+s.CursorTopic(topic, tLo, tHi) *TopicCursor
+```
+
+**The materialized-view invariant.** A topic cursor delivers a synthetic `TopicEvent` any time a row's membership in the filtered result set changes. For a row retagged from `news` → `sports`:
+
+```
+applyLocked(post1, ..., newTopic="sports")
+    oldTopic = "news"                         // from prior entry state
+    deliverTopic("news",   TopicLeave  post1) // old-topic subscribers see eviction
+    deliverTopic("sports", TopicEnter  post1) // new-topic subscribers see insertion
+                                              // both at the same LSN
+```
+
+So a consumer that applies the cursor's snapshot and every subsequent event maintains a result set **identical to what `CursorTopic(topic)` would return if reopened**. The diff is produced on both sides of the bridge because the topic is stored on the entry and `applyLocked` derives `oldTopic` locally from whatever that replica last saw — the wire protocol doesn't change.
+
+**Fixed vs rolling cursor mode.** The demo exposes two framings of the same cursor:
+
+- **Rolling** — admit rows whose `modTime ∈ (now − window, now)`. The frame slides; rows age out.
+- **Fixed** — admit rows whose `createdAt ∈ [lo, hi)`. The frame is anchored to creation time, so once a row is admitted it stays until deleted; updates don't change membership. Answers "which rows were *created* in this window?" rather than "which rows were *touched*."
+
+Both modes work with or without a topic filter.
+
+**The demo.** `cmd/bidi` wires all this into a browser UI: two shards side-by-side with their patch streams, a bridge that can be partitioned and healed, a divergence table, and the live materialized-view panel. Click a row in either table to load it into the form and update it in place.
+
 ---
 
 ## File map
@@ -216,16 +290,20 @@ joindb/
 │
 ├── hash.go              ← Hash = SHA-256, short-string for logs
 ├── nodestore.go         ← NodeStore interface + MemStore impl
-├── shard.go             ← Shard: Put/Get/Delete/Range/LSN + subscriber dispatch
+├── stamp.go             ← Stamp{Lamport, Origin} + Dominates for LWW
+├── shard.go             ← Shard: Put/PutTopic/Delete/Apply/Range + secondary indexes on modTime and topic
 ├── index.go             ← content-addressed tree: Build, Get, Range; isBoundary
+├── view.go              ← index introspection helpers (leaf/internal node walkers)
 ├── sync.go              ← top-down hash-diff pull
-├── cursor.go            ← Patch, PatchKind, Subscription, Shard.Subscribe
+├── cursor.go            ← Patch, Subscription, TopicSub, TopicEvent; Shard.Subscribe, CursorModified, CursorTopic
 ├── live.go              ← LiveReplica: Start, Stop, WaitFor, cascade
+├── bridge.go            ← Bridge: bidirectional sync via stamp-dominance LWW
 ├── server.go            ← Server: wraps Shard + IdxStore, counts RPCs
 ├── join.go              ← InnerJoinKeys: pushdown vs naive
-├── wire.go              ← GetReq/Resp etc., unused until M6 (real sockets)
+├── wire.go              ← GetReq/Resp etc., unused until real sockets land
 │
-└── *_test.go            ← 30 tests across all layers
+├── *_test.go            ← 50+ tests across all layers
+└── cmd/bidi/            ← single-page web demo of the whole thing
 ```
 
 Every file stands on its own. Reading order matches the milestone order: shard → index → sync → cursor → live → join.
@@ -245,6 +323,12 @@ go test -count=1 -race -v -run 'Sync|Join|Replica' ./...
 ```
 
 You'll see the numbers cited in this README in the test logs.
+
+The web demo (bidirectional sync + live materialized view) runs at http://localhost:8081:
+
+```bash
+go run ./cmd/bidi
+```
 
 ---
 
@@ -275,15 +359,16 @@ Because the subscription snapshot is atomic-at-a-known-LSN for free. Combining M
 | Concern                                      | Where it would go           |
 | -------------------------------------------- | --------------------------- |
 | Persistence, crash recovery                  | `NodeStore` impl on disk    |
-| Multi-writer / consensus                     | Beyond v0 entirely          |
+| Multi-writer consensus (quorum, Raft, …)     | Beyond v0 entirely          |
 | Schema, SQL parsing, transactions            | Outside this layer          |
-| Real sharding, rebalance                     | M6+                         |
-| Real sockets                                 | M6 (wire types are ready)   |
-| Authentication, TLS                          | M6+                         |
+| Real sharding, rebalance                     | Beyond v0                   |
+| Real sockets                                 | `wire.go` types are ready; pluggable transport not yet wired |
+| Authentication, TLS                          | Beyond v0                   |
 | Cursors with fractional-index / CRDT keys    | Natural extension of `Patch`|
 | Disconnected reconnection for `LiveReplica`  | Merkle catch-up + resubscribe |
 | Sparse / keys-only secondary indexes         | Straightforward `Index` variant|
 | Query planner with cost-based pushdown       | Beyond this prototype       |
+| Tombstone GC                                 | Safe after all replicas ack; not v0 |
 
 The PLAN.md tracks most of these.
 
