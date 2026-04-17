@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>joindb — bidirectional sync demo</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #0d1117;
+    --border: #30363d;
+    --fg: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --green-dim: #1f6f3b;
+    --yellow: #d29922;
+    --yellow-dim: #6b4c0a;
+    --red: #f85149;
+    --red-dim: #6b2b2b;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--fg);
+    font-family: var(--mono); font-size: 13px;
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  header h1 .v { color: var(--muted); font-weight: 400; margin-left: 8px; }
+  .pill { font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .pill.live { border-color: var(--green-dim); color: var(--green); }
+  .pill.warn { border-color: var(--red-dim); color: var(--red); background: rgba(248, 81, 73, 0.08); }
+
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px;
+    border-bottom: 1px solid var(--border); background: var(--panel-2);
+    align-items: center;
+  }
+  .controls .stats { color: var(--muted); padding: 0 6px; }
+  .controls .stats b { color: var(--fg); font-weight: 500; }
+  .controls button {
+    background: #21262d; color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 5px 10px; font-family: var(--mono); font-size: 12px;
+    cursor: pointer;
+  }
+  .controls button:hover { background: #30363d; }
+  .controls button.warn { background: #6e2f32; border-color: var(--red-dim); }
+  .controls button.warn:hover { background: var(--red-dim); }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto 1fr auto;
+    gap: 1px;
+    background: var(--border);
+    min-height: calc(100vh - 52px - 42px);
+  }
+  section {
+    background: var(--panel); overflow: hidden;
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  section h2 {
+    margin: 0; padding: 8px 14px; font-size: 12px; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--border); background: var(--panel-2);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  section h2 .meta { color: var(--fg); font-weight: 400; text-transform: none; letter-spacing: 0; }
+  section .body { flex: 1; overflow: auto; padding: 8px 14px; }
+
+  .sideCtl {
+    display: flex; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--border);
+    background: var(--panel-2); flex-wrap: wrap; align-items: center;
+  }
+  .sideCtl input[type=text] {
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 5px 8px; font-family: var(--mono); font-size: 12px;
+    width: 110px;
+  }
+  .sideCtl button {
+    background: #21262d; color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 5px 10px; font-family: var(--mono); font-size: 12px;
+    cursor: pointer;
+  }
+  .sideCtl button:hover { background: #30363d; }
+  .sideCtl button.primary { background: #1f6feb; border-color: #388bfd; }
+  .sideCtl button.primary:hover { background: #388bfd; }
+
+  table.kv { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.kv th {
+    text-align: left; color: var(--muted); font-weight: 400;
+    border-bottom: 1px solid var(--border); padding: 4px 8px;
+    position: sticky; top: 0; background: var(--panel);
+  }
+  table.kv td { padding: 2px 8px; vertical-align: top; }
+  table.kv td.k { color: var(--accent); white-space: nowrap; }
+  table.kv td.v { color: var(--fg); word-break: break-all; }
+  table.kv td.s { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  table.kv td.s.local-A { color: #79c0ff; }
+  table.kv td.s.local-B { color: #d2a8ff; }
+  table.kv tr.flash { animation: flash 0.6s ease-out; }
+  @keyframes flash {
+    from { background: rgba(210, 153, 34, 0.35); }
+    to   { background: transparent; }
+  }
+  .empty { color: var(--muted); padding: 8px 0; font-style: italic; }
+
+  .log { font-size: 11.5px; }
+  .log .entry { padding: 2px 0; display: grid; grid-template-columns: 90px 36px 46px 1fr 64px; gap: 6px; align-items: baseline; }
+  .log .entry .time { color: var(--muted); font-size: 10.5px; }
+  .log .entry .lsn { color: var(--accent); text-align: right; }
+  .log .entry .kind { text-transform: uppercase; font-size: 10px; padding: 1px 4px; border-radius: 2px; text-align: center; }
+  .log .entry .kind.insert { background: #1f6f3b; color: #d5f0dd; }
+  .log .entry .kind.update { background: #1f4d8a; color: #d4e3f7; }
+  .log .entry .kind.delete { background: #6e2f32; color: #f7d4d6; }
+  .log .entry .key { color: var(--fg); word-break: break-all; }
+  .log .entry .key .v { color: var(--muted); margin-left: 6px; }
+  .log .entry .stamp { color: var(--muted); text-align: right; font-size: 10.5px; }
+  .log .entry.remote .stamp { color: var(--yellow); }
+  .log .entry.remote { background: rgba(210, 153, 34, 0.04); }
+
+  .diverge {
+    grid-column: 1 / -1;
+    background: var(--panel);
+  }
+  .diverge table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .diverge th {
+    text-align: left; color: var(--muted); font-weight: 400;
+    border-bottom: 1px solid var(--border); padding: 4px 8px;
+  }
+  .diverge td { padding: 3px 8px; vertical-align: top; }
+  .diverge .k { color: var(--yellow); }
+  .diverge .missing { color: var(--red); font-style: italic; }
+  .diverge .winner { color: var(--green); font-weight: 500; }
+</style>
+</head>
+<body>
+<header>
+  <h1>joindb <span class="v">bidirectional sync · LWW via Lamport + origin</span></h1>
+  <div style="display: flex; gap: 8px;">
+    <span id="partStatus" class="pill live">bridge: live</span>
+    <span id="status" class="pill">connecting…</span>
+  </div>
+</header>
+<div class="controls">
+  <span class="stats">bridge: <b><span id="aToB">0</span></b> A→B applied / <b><span id="aToBDrop">0</span></b> dropped · <b><span id="bToA">0</span></b> B→A applied / <b><span id="bToADrop">0</span></b> dropped</span>
+  <span style="flex:1"></span>
+  <button class="warn" onclick="partition()">Toggle partition</button>
+  <button onclick="reset()">Reset</button>
+</div>
+<main>
+  <section id="panelA">
+    <h2>Node A <span class="meta">LSN <span id="aLSN">0</span> · Lamport <span id="aLam">0</span> · <span id="aCount">0</span> keys</span></h2>
+    <div class="sideCtl">
+      <input type="text" id="aKey" placeholder="key">
+      <input type="text" id="aValue" placeholder="value">
+      <button class="primary" onclick="put('A')">Put</button>
+      <button onclick="del('A')">Delete</button>
+      <button onclick="burst('A', 20)">+20</button>
+      <button onclick="burst('A', 200)">+200</button>
+    </div>
+    <div class="body"><table class="kv" id="aTable"><thead><tr><th>key</th><th>value</th><th>last-writer</th></tr></thead><tbody></tbody></table></div>
+  </section>
+  <section id="panelB">
+    <h2>Node B <span class="meta">LSN <span id="bLSN">0</span> · Lamport <span id="bLam">0</span> · <span id="bCount">0</span> keys</span></h2>
+    <div class="sideCtl">
+      <input type="text" id="bKey" placeholder="key">
+      <input type="text" id="bValue" placeholder="value">
+      <button class="primary" onclick="put('B')">Put</button>
+      <button onclick="del('B')">Delete</button>
+      <button onclick="burst('B', 20)">+20</button>
+      <button onclick="burst('B', 200)">+200</button>
+    </div>
+    <div class="body"><table class="kv" id="bTable"><thead><tr><th>key</th><th>value</th><th>last-writer</th></tr></thead><tbody></tbody></table></div>
+  </section>
+  <section class="diverge">
+    <h2>Divergence <span class="meta" id="divMeta">keys where A and B disagree</span></h2>
+    <div class="body"><div id="divBody"></div></div>
+  </section>
+  <section>
+    <h2>A — patch stream <span class="meta">newest first; yellow = applied from peer</span></h2>
+    <div class="body"><div class="log" id="logA"></div></div>
+  </section>
+  <section>
+    <h2>B — patch stream</h2>
+    <div class="body"><div class="log" id="logB"></div></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const prevKVs = { A: new Map(), B: new Map() };
+
+function esc(s) {
+  if (s === undefined || s === null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderKV(side, kvs) {
+  const tbody = document.querySelector('#' + side.toLowerCase() + 'Table tbody');
+  if (!kvs.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty">(empty)</td></tr>';
+    prevKVs[side].clear();
+    return;
+  }
+  const next = new Map();
+  const rows = [];
+  for (const kv of kvs) {
+    const cur = JSON.stringify([kv.value, kv.origin, kv.clock]);
+    next.set(kv.key, cur);
+    const prior = prevKVs[side].get(kv.key);
+    const cls = (prior !== undefined && prior !== cur) || (prior === undefined && prevKVs[side].size > 0) ? ' class="flash"' : '';
+    const stampClass = 's local-' + kv.origin;
+    rows.push(`<tr${cls}>
+      <td class="k">${esc(kv.key)}</td>
+      <td class="v">${esc(kv.value)}</td>
+      <td class="${stampClass}">${esc(kv.origin)}@${kv.clock}</td>
+    </tr>`);
+  }
+  tbody.innerHTML = rows.join('');
+  prevKVs[side] = next;
+}
+
+function renderLog(id, patches, localOrigin) {
+  const rows = patches.map(p => {
+    const remote = p.origin !== localOrigin;
+    const v = p.value ? `<span class="v">${esc(p.value)}</span>` : '';
+    return `<div class="entry${remote ? ' remote' : ''}">
+      <span class="time">${esc(p.time)}</span>
+      <span class="lsn">${p.lsn}</span>
+      <span class="kind ${p.kind}">${p.kind}</span>
+      <span class="key">${esc(p.key)}${v}</span>
+      <span class="stamp">${esc(p.origin)}@${p.clock}</span>
+    </div>`;
+  });
+  $(id).innerHTML = rows.join('');
+}
+
+function renderDivergence(div) {
+  const body = $('divBody');
+  $('divMeta').textContent = div.length
+    ? `${div.length} key${div.length > 1 ? 's' : ''} out of sync — LWW will resolve when the bridge delivers the dominating stamp`
+    : 'A and B agree on every key';
+  if (!div.length) {
+    body.innerHTML = '<div class="empty">(in sync)</div>';
+    return;
+  }
+  const rows = div.map(d => {
+    const av = d.aPresent ? esc(d.aValue) : '<span class="missing">(absent)</span>';
+    const bv = d.bPresent ? esc(d.bValue) : '<span class="missing">(absent)</span>';
+    return `<tr>
+      <td class="k">${esc(d.key)}</td>
+      <td>${av}</td>
+      <td>${esc(d.aStamp)}</td>
+      <td>${bv}</td>
+      <td>${esc(d.bStamp)}</td>
+    </tr>`;
+  });
+  body.innerHTML = `<table><thead><tr><th>key</th><th>A value</th><th>A stamp</th><th>B value</th><th>B stamp</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+}
+
+function render(s) {
+  $('aLSN').textContent = s.a.lsn;
+  $('bLSN').textContent = s.b.lsn;
+  $('aLam').textContent = s.a.lamport;
+  $('bLam').textContent = s.b.lamport;
+  $('aCount').textContent = s.a.kvs.length;
+  $('bCount').textContent = s.b.kvs.length;
+  $('aToB').textContent = s.bridgeStats.AtoB_Applied;
+  $('aToBDrop').textContent = s.bridgeStats.AtoB_Dropped;
+  $('bToA').textContent = s.bridgeStats.BtoA_Applied;
+  $('bToADrop').textContent = s.bridgeStats.BtoA_Dropped;
+  if (s.partitioned) {
+    $('partStatus').textContent = 'bridge: PARTITIONED';
+    $('partStatus').className = 'pill warn';
+  } else {
+    $('partStatus').textContent = 'bridge: live';
+    $('partStatus').className = 'pill live';
+  }
+  renderKV('A', s.a.kvs);
+  renderKV('B', s.b.kvs);
+  renderLog('logA', s.logA, 'A');
+  renderLog('logB', s.logB, 'B');
+  renderDivergence(s.divergence);
+}
+
+async function post(path, body) {
+  await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : null,
+  });
+}
+
+function put(side) {
+  const k = $(side.toLowerCase() + 'Key').value.trim();
+  const v = $(side.toLowerCase() + 'Value').value;
+  if (!k) return;
+  post('/api/put', { Side: side, Key: k, Value: v });
+  $(side.toLowerCase() + 'Value').value = '';
+}
+function del(side) {
+  const k = $(side.toLowerCase() + 'Key').value.trim();
+  if (!k) return;
+  post('/api/delete', { Side: side, Key: k });
+}
+function burst(side, n) { post('/api/burst', { Side: side, N: n }); }
+function partition() { post('/api/partition'); }
+function reset() {
+  if (!confirm('Reset both nodes?')) return;
+  post('/api/reset');
+}
+
+function connect() {
+  const es = new EventSource('/api/events');
+  es.onopen = () => { $('status').textContent = 'live'; $('status').className = 'pill live'; };
+  es.onerror = () => { $('status').textContent = 'disconnected'; $('status').className = 'pill'; };
+  es.onmessage = (ev) => {
+    try { render(JSON.parse(ev.data)); } catch (e) { console.error(e); }
+  };
+}
+connect();
+</script>
+</body>
+</html>

@@ -23,12 +23,16 @@ func (k PatchKind) String() string {
 }
 
 // Patch is a single committed mutation. LSNs are per-shard and strictly
-// monotonic; subscribers observe Patches in LSN order.
+// monotonic; subscribers observe Patches in LSN order. The Stamp carries
+// the Lamport/origin pair used for cross-shard last-writer-wins — when
+// this patch was propagated from another node, Stamp records *that*
+// node's Lamport at the moment of its original commit, not ours.
 type Patch struct {
 	LSN   uint64
 	Kind  PatchKind
 	Key   string
 	Value []byte // nil for PatchDelete
+	Stamp Stamp
 }
 
 // Subscription is a live view over (Shard, [lo, hi)). It exposes an
