@@ -68,6 +68,25 @@ The architecture already splits this into two sub-problems, and they have very d
 
 **v0 recommendation:** do NodeStore-on-disk first. It's the smaller change and unlocks the most interesting demo — cold-start a replica, see it catch up via the persistent NodeStore without a full re-pull. Defer Shard WAL until we actually want authoritative shards to survive crashes.
 
+## Hierarchical replication / edge caching (exploratory, not scheduled)
+
+Sketch: a *tree* of shards where edge clusters (groups of users working on similar things) replicate locally for low-latency convergence, with changes propagating upward toward a core quorum that acts as source of truth. Discussed 2026-04-17; recording the shape here so we can come back to it.
+
+**What's already free.** The Bridge composes into a tree trivially — N children hanging off one hub is just N Bridges from the same Shard, and LWW converges regardless of topology. Narrowing a Bridge to a key range or a `CursorTopic` gets per-cluster locality for free: an edge only sees the subset its users touch. Cycle safety comes from the stamp-dominance check.
+
+**What's missing.**
+
+1. **"Source of truth at the quorum" is not LWW-shaped.** Pure LWW treats any dominating stamp as authoritative regardless of origin. Two honest options:
+   - *Bayou-style* (Terry 1995): edge writes are tentative locally, reconciled against a primary that commits a total order; reads can ask for tentative or committed. This is the real realization of "edge fast, quorum is truth."
+   - *Biased LWW*: bake a core-origin preference into the tiebreak. Cheaper, but the core only wins on symmetric conflicts; a later edge write by Lamport still wins.
+2. **Loop suppression needs a last-hop marker, not just origin.** For a pure tree with no sibling links, today's origin-skip suffices. For redundant paths we'd want per-hop labels or a TTL on the patch envelope (bridge layer, not Patch itself).
+3. **Tombstone GC becomes mandatory.** Trees accumulate tombstones forever. Need a watermark scheme: core publishes "everyone ≤ LSN W has ack'd," edges collect below it. Dynamo-family machinery.
+4. **No causal session guarantees.** Lamport is too weak for read-your-writes across cluster boundaries. Fix is a per-session max-stamp tracker à la Pileus.
+
+**Design fork to revisit.** Biased-LWW is an afternoon of work on top of what's here; Bayou-style tentative/committed writes is a substantial feature (needs primary election, reconciliation log, read semantics). Which one we want depends on whether "the quorum is truth" means "the quorum owns conflict resolution" (biased LWW) or "the quorum owns durability and commit order" (Bayou). Not deciding now.
+
+**Prior art to keep handy.** Bayou (Terry et al. 1995) for the tentative/committed model; AntidoteDB / Cure for hierarchical CRDT at scale; Pileus / Tuba for edge caching with tunable consistency SLAs; Riak multi-datacenter replication for LWW-across-DCs in production.
+
 ## Out of scope for v0
 
 Persistence, crash recovery, multi-writer / consensus, schema & SQL, transactions, rebalance, auth.
