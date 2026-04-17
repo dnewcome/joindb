@@ -47,6 +47,17 @@ No real network, persistence, failure handling, or multi-writer yet.
 2. **Chunking strategy.** Content-defined (rolling hash on keys) vs. fixed size by key count. Start fixed-size for simplicity, revisit if perf demands.
 3. **Query planner location.** v0: client-side only. No split planning.
 
+## Status (2026-04-16)
+
+- M1 ✅ `shard.go` — sorted in-memory shard, Put/Get/Delete/Range.
+- M2 ✅ `index.go`, `hash.go`, `nodestore.go` — content-addressed tree with level-aware content-defined chunking. Locality verified: one insert → ≤12 new chunks in a 2000-key tree.
+- M3 ✅ `sync.go` — top-down hash-diff pull. 2000 keys → 132-chunk initial sync; one insert → 3-chunk delta.
+- M4 ✅ `cursor.go` — atomic snapshot + strict LSN-ordered patch stream. Dual-writer + concurrent drainer converges exactly.
+- M5 ✅ `join.go`, `server.go` — join executor with RPC counting. Pushdown path issues 0 query-time RPCs vs naive's 1-per-key.
+- M7 ✅ `live.go` — LiveReplica combines M3+M4: bootstraps via Subscribe snapshot, applies patches in order. Exposes its local Shard so replicas cascade (A→B→C). Parity test confirms a fresh Merkle-sync of the source index produces the same state.
+
+Open: M6 (real sockets over the existing `wire.go` types), sparse / keys-only index with a single bounded range get at query time, disconnect/reconnect semantics for LiveReplica (pick: rebootstrap vs. Merkle delta).
+
 ## Out of scope for v0
 
 Persistence, crash recovery, multi-writer / consensus, schema & SQL, transactions, rebalance, auth.
